@@ -119,21 +119,22 @@ static int parseline(char *line, char **argv){
  */
 static void proxy(client_info *client, char *prefix){
     int argc, port, clientfd;
-    char buf[MAXLINE], *argv[MAXARGS], *host, *msg, buftime[MAXTIMELEN];
+    char buf[MAXLINE], line[MAXLINE], *argv[MAXARGS], *host, *msg, buftime[MAXTIMELEN];
     size_t n; 
     time_t curtime;
     rio_t rio, rio_server;
 
     Rio_readinitb(&rio, client->connfd);
-    while((n = Rio_readlineb(&rio, buf, MAXLINE)) != 0) {
+    while((n = Rio_readlineb_w(&rio, buf, MAXLINE)) != 0) {
         /* parse input from client */
-        argc = parseline(buf, argv);
+        memcpy(line, buf, sizeof(buf));
+        argc = parseline(line, argv);
 
         /* wrong argument from client */
         if(argc != 3){
             printf("%sreceived wrong arguments : %s", prefix, buf);
             sprintf(buf, "proxy usage: <host> <port> <message>\n");
-            Rio_writen(client->connfd, buf, strlen(buf));
+            Rio_writen_w(client->connfd, buf, strlen(buf));
             continue;
         }
 
@@ -141,15 +142,28 @@ static void proxy(client_info *client, char *prefix){
         host = argv[0];
         port = atoi(argv[1]);
         msg = argv[2]; // containing '\n'
-        printf("%sreceived %s, %d, %s", prefix, host, port, msg);
+        printf("%sreceived %s", prefix, buf);
 
         /* send msg to server */
-        clientfd = open_clientfd_ts(host, port, &open_clientfd_mutex);
+        if((clientfd = open_clientfd_ts(host, port, &open_clientfd_mutex)) < 0){
+            sprintf(buf, "ERROR, cannot open %s:%d\n", host, port);
+            fprintf(stderr, buf);
+            Rio_writen_w(client->connfd, buf, strlen(buf));
+            continue;
+        }
         Rio_readinitb(&rio_server, clientfd);
-        Rio_writen(clientfd, msg, strlen(msg));
+        Rio_writen_w(clientfd, msg, strlen(msg));
+        printf("%ssent %s:%d %s", prefix, host, port, msg);
 
         /* receive echo from server */
-        Rio_readlineb(&rio_server, buf, MAXLINE);
+        if(Rio_readlineb_w(&rio_server, buf, MAXLINE) == 0){
+            sprintf(buf, "ERROR, server didn't echo\n");
+            fprintf(stderr, buf);
+            Rio_writen_w(client->connfd, buf, strlen(buf));
+            Close(clientfd);
+            continue;
+        }
+        printf("%sreceived %s", prefix, buf);
         Close(clientfd);
 
         /* write log (need mutex) */
@@ -163,7 +177,8 @@ static void proxy(client_info *client, char *prefix){
         fflush(flog);
 
         /* send echo to client */
-        Rio_writen(client->connfd, buf, strlen(buf));
+        Rio_writen_w(client->connfd, buf, strlen(buf));
+        printf("%ssent %s:%d %s", prefix, client->addr, client->port, buf);
     }
 }
 
@@ -181,10 +196,11 @@ void *process_request(void* vargp){
     tid = pthread_self();
     Pthread_detach(tid); 
 
-    printf("Served by thread %d\n", (int)tid);
     sprintf(prefix, "Thread %d ", (int)tid);
 
+    printf("Served by thread %d\n", (int)tid);
     proxy(&client, prefix);
+    printf("Thread %d ends\n", (int)tid);
 
     Close(client.connfd);
     return NULL;
@@ -221,4 +237,35 @@ int open_clientfd_ts(char *hostname, int port, sem_t *mutexp){
     if (connect(clientfd, (SA *) &serveraddr, sizeof(serveraddr)) < 0)
         return -1;
     return clientfd;
+}
+
+void unix_warn(char *msg) /* unix-style error */
+{
+    fprintf(stderr, "%s: %s\n", msg, strerror(errno));
+}
+
+ssize_t Rio_readn_w(int fd, void *ptr, size_t nbytes){
+    ssize_t n;
+  
+    if ((n = rio_readn(fd, ptr, nbytes)) < 0){
+        unix_warn("rio_readn error");
+        return 0;
+    }
+    return n;
+}
+
+ssize_t Rio_readlineb_w(rio_t *rp, void *usrbuf, size_t maxlen){
+    ssize_t rc;
+
+    if ((rc = rio_readlineb(rp, usrbuf, maxlen)) < 0){
+        unix_warn("rio_readlineb error");
+        return 0;
+    }
+    return rc;
+}
+
+void Rio_writen_w(int fd, void *usrbuf, size_t n){
+    if (rio_writen(fd, usrbuf, n) != n){
+        unix_warn("rio_writen error");
+    }
 }
