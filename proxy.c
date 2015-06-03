@@ -30,6 +30,7 @@ typedef struct{
 
 static FILE *flog;
 static sem_t fmutex;
+static sem_t open_clientfd_mutex;
 
 /*
  * Functions to define
@@ -62,6 +63,7 @@ int main(int argc, char **argv)
     /* alloc resources */
     flog = Fopen(PROXY_LOG, "a");
     Sem_init(&fmutex, 0, 1);
+    Sem_init(&open_clientfd_mutex, 0, 1);
 
     port = atoi(argv[1]);
     listenfd = Open_listenfd(port);
@@ -142,7 +144,7 @@ static void proxy(client_info *client, char *prefix){
         printf("%sreceived %s, %d, %s", prefix, host, port, msg);
 
         /* send msg to server */
-        clientfd = Open_clientfd(host, port);
+        clientfd = open_clientfd_ts(host, port, &open_clientfd_mutex);
         Rio_readinitb(&rio_server, clientfd);
         Rio_writen(clientfd, msg, strlen(msg));
 
@@ -152,13 +154,13 @@ static void proxy(client_info *client, char *prefix){
 
         /* write log (need mutex) */
         /* e.g. Sun 27 Nov 2013 02:51:02 KST: 128.2.111.38 38421 11 HELLOWORLD! */
-        P(&fmutex);
         curtime = time(NULL);
         strftime(buftime, MAXTIMELEN, "%a %d %b %Y %T %Z", gmtime(&curtime));
+        P(&fmutex);
         fprintf(flog, "%s: %s %hu %d %s",
                 buftime, client->addr, client->port, strlen(buf), buf); 
-        fflush(flog);
         V(&fmutex);
+        fflush(flog);
 
         /* send echo to client */
         Rio_writen(client->connfd, buf, strlen(buf));
@@ -186,4 +188,37 @@ void *process_request(void* vargp){
 
     Close(client.connfd);
     return NULL;
+}
+
+int open_clientfd_ts(char *hostname, int port, sem_t *mutexp){
+    int clientfd;
+    struct hostent *hp;
+    struct sockaddr_in serveraddr;
+
+    if ((clientfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+        return -1; /* check errno for cause of error */
+
+    bzero((char *) &serveraddr, sizeof(serveraddr));
+    serveraddr.sin_family = AF_INET;
+
+    /* lock before calling gethostbyname */
+    P(mutexp);
+
+    /* Fill in the server's IP address and port */
+    if ((hp = gethostbyname(hostname)) == NULL){
+        V(mutexp);
+        return -2; /* check h_errno for cause of error */
+    }
+    bcopy((char *)hp->h_addr_list[0], 
+            (char *)&serveraddr.sin_addr.s_addr, hp->h_length);
+
+    /* all data copied from hp, so unlock */
+    V(mutexp);
+
+    serveraddr.sin_port = htons(port);
+
+    /* Establish a connection with the server */
+    if (connect(clientfd, (SA *) &serveraddr, sizeof(serveraddr)) < 0)
+        return -1;
+    return clientfd;
 }
