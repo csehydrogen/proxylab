@@ -15,7 +15,7 @@ echoserver: echoservert.c csapp.o csapp.h echo.o echo.h
 	$(CC) $(CFLAGS) -o echoserver echoservert.c csapp.o echo.o $(LIBS)
 
 proxy: proxy.c csapp.o csapp.h
-	$(CC) $(CFLAGS) -o proxy proxy.c csapp.o $(LIBS)
+	$(CC) $(CFLAGS) -o proxy proxy.c csapp.o echo.o $(LIBS)
 
 csapp.o: csapp.c csapp.h
 	$(CC) $(CFLAGS) -c csapp.c
