@@ -15,6 +15,8 @@
 /* The name of the proxy's log file */
 #define PROXY_LOG "proxy.log"
 
+#define MAXARGS 8
+
 /* Undefine this if you don't want debugging output */
 #define DEBUG
 
@@ -26,6 +28,8 @@ int open_clientfd_ts(char *hostname, int port, sem_t *mutexp);
 ssize_t Rio_readn_w(int fd, void *ptr, size_t nbytes);
 ssize_t Rio_readlineb_w(rio_t *rp, void *usrbuf, size_t maxlen);
 void Rio_writen_w(int fd, void *usrbuf, size_t n);
+static int parseline(char *line, char **argv);
+static void proxy(int connfd, char *prefix);
 
 /*
  * main - Main routine for the proxy program
@@ -63,28 +67,68 @@ int main(int argc, char **argv)
     return 0;
 }
 
-int parseline(char *line, char **argv){
+/*
+ * parse line into argv form
+ */
+static int parseline(char *line, char **argv){
+    char *saveptr;
+
+    /* parse host */
+    if((argv[0] = strtok_r(line, " ", &saveptr)) == NULL){
+        return 0;
+    }
+
+    /* parse port */
+    if((argv[1] = strtok_r(NULL, " ", &saveptr)) == NULL){
+        return 1;
+    }
+
+    /* parse message */
+    if((argv[2] = strtok_r(NULL, "", &saveptr)) == NULL){
+        return 2;
+    }
+
+    return 3;
 }
 
-void upper_case(char *s)
-{
-  while (*s) {
-    *s = toupper(*s);
-    s++;
-  }
-}
-
-void echoclient(int connfd, char *prefix) 
-{
+/*
+ * parse input from client, send msg to server,
+ * receive echo from server, and send echo to client
+ */
+static void proxy(int connfd, char *prefix){
+    int argc, port, clientfd;
     size_t n; 
-    char buf[MAXLINE]; 
-    rio_t rio;
+    char buf[MAXLINE], line[MAXLINE], *argv[MAXARGS]; 
+    char *host, *msg;
+    rio_t rio, rio_server;
 
     Rio_readinitb(&rio, connfd);
     while((n = Rio_readlineb(&rio, buf, MAXLINE)) != 0) {
-        printf("%sreceived %d bytes (%d total)\n", prefix, (int)n);
-        upper_case(buf);
-        Rio_writen(connfd, buf, n);
+        /* parse input from client */
+        strcpy(line, buf);
+        argc = parseline(line, argv);
+
+        /* wrong argument from client */
+        if(argc != 3){
+            sprintf(buf, "proxy usage: <host> <port> <message>\n");
+            Rio_writen(connfd, buf, strlen(buf));
+            continue;
+        }
+
+        /* send msg to server */
+        host = argv[0];
+        port = atoi(argv[1]);
+        msg = argv[2]; // containing '\n'
+        clientfd = Open_clientfd(host, port);
+        Rio_readinitb(&rio_server, clientfd);
+        Rio_writen(clientfd, msg, strlen(msg));
+
+        /* receive echo from server */
+        Rio_readlineb(&rio_server, buf, MAXLINE);
+        Close(clientfd);
+
+        /* send echo to client */
+        Rio_writen(connfd, buf, strlen(buf));
     }
 }
 
@@ -105,7 +149,7 @@ void *process_request(void* vargp)
     printf("Served by thread %d\n", (int) tid);
     sprintf(prefix, "Thread %d ", (int) tid);
 
-    echo(connfd, prefix);
+    proxy(connfd, prefix);
 
     Close(connfd);
     return NULL;
