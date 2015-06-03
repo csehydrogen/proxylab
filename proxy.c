@@ -63,6 +63,7 @@ int main(int argc, char **argv)
                 hp->h_name, haddrp, client_port);
         Pthread_create(&tid, NULL, process_request, connfdp);
     }
+    Close(listenfd);
 
     return 0;
 }
@@ -98,15 +99,14 @@ static int parseline(char *line, char **argv){
 static void proxy(int connfd, char *prefix){
     int argc, port, clientfd;
     size_t n; 
-    char buf[MAXLINE], line[MAXLINE], *argv[MAXARGS]; 
+    char buf[MAXLINE], *argv[MAXARGS]; 
     char *host, *msg;
     rio_t rio, rio_server;
 
     Rio_readinitb(&rio, connfd);
     while((n = Rio_readlineb(&rio, buf, MAXLINE)) != 0) {
         /* parse input from client */
-        strcpy(line, buf);
-        argc = parseline(line, argv);
+        argc = parseline(buf, argv);
 
         /* wrong argument from client */
         if(argc != 3){
