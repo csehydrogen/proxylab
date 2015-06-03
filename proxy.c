@@ -29,6 +29,7 @@ typedef struct{
 } client_info;
 
 static FILE *flog;
+static sem_t fmutex;
 
 /*
  * Functions to define
@@ -59,10 +60,8 @@ int main(int argc, char **argv)
     }
 
     /* alloc resources */
-    if((flog = fopen(PROXY_LOG, "a")) == NULL){
-        fprintf(stderr, "ERROR opening log file\n");
-        exit(-1);
-    }
+    flog = Fopen(PROXY_LOG, "a");
+    Sem_init(&fmutex, 0, 1);
 
     port = atoi(argv[1]);
     listenfd = Open_listenfd(port);
@@ -83,7 +82,7 @@ int main(int argc, char **argv)
     /* free resources */
     Close(listenfd);
 
-    fclose(flog);
+    Fclose(flog);
 
     return 0;
 }
@@ -151,13 +150,15 @@ static void proxy(client_info *client, char *prefix){
         Rio_readlineb(&rio_server, buf, MAXLINE);
         Close(clientfd);
 
-        /* write log */
+        /* write log (need mutex) */
         /* e.g. Sun 27 Nov 2013 02:51:02 KST: 128.2.111.38 38421 11 HELLOWORLD! */
+        P(&fmutex);
         curtime = time(NULL);
         strftime(buftime, MAXTIMELEN, "%a %d %b %Y %T %Z", gmtime(&curtime));
         fprintf(flog, "%s: %s %hu %d %s",
                 buftime, client->addr, client->port, strlen(buf), buf); 
         fflush(flog);
+        V(&fmutex);
 
         /* send echo to client */
         Rio_writen(client->connfd, buf, strlen(buf));
