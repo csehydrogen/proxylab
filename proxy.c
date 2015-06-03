@@ -11,14 +11,24 @@
 
 #include "csapp.h"
 #include "echo.h"
+#include <time.h>
 
 /* The name of the proxy's log file */
 #define PROXY_LOG "proxy.log"
 
 #define MAXARGS 8
+#define MAXTIMELEN 32
 
 /* Undefine this if you don't want debugging output */
 #define DEBUG
+
+typedef struct{
+    char addr[16];
+    uint16_t port;
+    int connfd;
+} client_info;
+
+static FILE *flog;
 
 /*
  * Functions to define
@@ -29,17 +39,17 @@ ssize_t Rio_readn_w(int fd, void *ptr, size_t nbytes);
 ssize_t Rio_readlineb_w(rio_t *rp, void *usrbuf, size_t maxlen);
 void Rio_writen_w(int fd, void *usrbuf, size_t n);
 static int parseline(char *line, char **argv);
-static void proxy(int connfd, char *prefix);
+static void proxy(client_info *client, char *prefix);
 
 /*
  * main - Main routine for the proxy program
  */
 int main(int argc, char **argv)
 {
-    int port, listenfd, *connfdp, clientlen, client_port;
-    char *haddrp;
+    int port, listenfd, clientlen;
     struct sockaddr_in clientaddr;
     struct hostent *hp;
+    client_info *client;
     pthread_t tid;
 
     /* Check arguments */
@@ -48,22 +58,32 @@ int main(int argc, char **argv)
         exit(0);
     }
 
+    /* alloc resources */
+    if((flog = fopen(PROXY_LOG, "a")) == NULL){
+        fprintf(stderr, "ERROR opening log file\n");
+        exit(-1);
+    }
+
     port = atoi(argv[1]);
     listenfd = Open_listenfd(port);
 
     while(1){
         clientlen = sizeof(clientaddr);
-        connfdp = Malloc(sizeof(int));
-        *connfdp = Accept(listenfd, (SA*)&clientaddr, &clientlen);
+        client = Malloc(sizeof(client_info));
+        client->connfd = Accept(listenfd, (SA*)&clientaddr, &clientlen);
         hp = Gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr,
                 sizeof(clientaddr.sin_addr.s_addr), AF_INET);
-        haddrp = inet_ntoa(clientaddr.sin_addr);
-        client_port = ntohs(clientaddr.sin_port);
+        strcpy(client->addr, inet_ntoa(clientaddr.sin_addr));
+        client->port = ntohs(clientaddr.sin_port);
         printf("Server connected to %s (%s), port %d\n",
-                hp->h_name, haddrp, client_port);
-        Pthread_create(&tid, NULL, process_request, connfdp);
+                hp->h_name, client->addr, client->port);
+        Pthread_create(&tid, NULL, process_request, client);
     }
+
+    /* free resources */
     Close(listenfd);
+
+    fclose(flog);
 
     return 0;
 }
@@ -96,29 +116,33 @@ static int parseline(char *line, char **argv){
  * parse input from client, send msg to server,
  * receive echo from server, and send echo to client
  */
-static void proxy(int connfd, char *prefix){
+static void proxy(client_info *client, char *prefix){
     int argc, port, clientfd;
+    char buf[MAXLINE], *argv[MAXARGS], *host, *msg, buftime[MAXTIMELEN];
     size_t n; 
-    char buf[MAXLINE], *argv[MAXARGS]; 
-    char *host, *msg;
+    time_t curtime;
     rio_t rio, rio_server;
 
-    Rio_readinitb(&rio, connfd);
+    Rio_readinitb(&rio, client->connfd);
     while((n = Rio_readlineb(&rio, buf, MAXLINE)) != 0) {
         /* parse input from client */
         argc = parseline(buf, argv);
 
         /* wrong argument from client */
         if(argc != 3){
+            printf("%sreceived wrong arguments : %s", prefix, buf);
             sprintf(buf, "proxy usage: <host> <port> <message>\n");
-            Rio_writen(connfd, buf, strlen(buf));
+            Rio_writen(client->connfd, buf, strlen(buf));
             continue;
         }
 
-        /* send msg to server */
+        /* arguments */
         host = argv[0];
         port = atoi(argv[1]);
         msg = argv[2]; // containing '\n'
+        printf("%sreceived %s, %d, %s", prefix, host, port, msg);
+
+        /* send msg to server */
         clientfd = Open_clientfd(host, port);
         Rio_readinitb(&rio_server, clientfd);
         Rio_writen(clientfd, msg, strlen(msg));
@@ -127,30 +151,38 @@ static void proxy(int connfd, char *prefix){
         Rio_readlineb(&rio_server, buf, MAXLINE);
         Close(clientfd);
 
+        /* write log */
+        /* e.g. Sun 27 Nov 2013 02:51:02 KST: 128.2.111.38 38421 11 HELLOWORLD! */
+        curtime = time(NULL);
+        strftime(buftime, MAXTIMELEN, "%a %d %b %Y %T %Z", gmtime(&curtime));
+        fprintf(flog, "%s: %s %hu %d %s",
+                buftime, client->addr, client->port, strlen(buf), buf); 
+        fflush(flog);
+
         /* send echo to client */
-        Rio_writen(connfd, buf, strlen(buf));
+        Rio_writen(client->connfd, buf, strlen(buf));
     }
 }
 
 /*
  * thread routine
  */
-void *process_request(void* vargp)
-{
-    int connfd;
+void *process_request(void* vargp){
     char prefix[40];
     pthread_t tid;
+    client_info client;
 
-    connfd = *(int*)vargp;
-    tid = pthread_self();
-    Pthread_detach(tid); 
+    client = *(client_info*)vargp;
     Free(vargp);
 
-    printf("Served by thread %d\n", (int) tid);
-    sprintf(prefix, "Thread %d ", (int) tid);
+    tid = pthread_self();
+    Pthread_detach(tid); 
 
-    proxy(connfd, prefix);
+    printf("Served by thread %d\n", (int)tid);
+    sprintf(prefix, "Thread %d ", (int)tid);
 
-    Close(connfd);
+    proxy(&client, prefix);
+
+    Close(client.connfd);
     return NULL;
 }
