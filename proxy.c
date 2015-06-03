@@ -35,13 +35,15 @@ static sem_t open_clientfd_mutex;
 /*
  * Functions to define
  */
+static void sigpipe_handler(int sig);
+static int parseline(char *line, char **argv);
+static void proxy(client_info *client, char *prefix);
 void *process_request(void* vargp);
 int open_clientfd_ts(char *hostname, int port, sem_t *mutexp);
+static void unix_warn(char *msg);
 ssize_t Rio_readn_w(int fd, void *ptr, size_t nbytes);
 ssize_t Rio_readlineb_w(rio_t *rp, void *usrbuf, size_t maxlen);
 void Rio_writen_w(int fd, void *usrbuf, size_t n);
-static int parseline(char *line, char **argv);
-static void proxy(client_info *client, char *prefix);
 
 /*
  * main - Main routine for the proxy program
@@ -60,6 +62,7 @@ int main(int argc, char **argv)
         exit(0);
     }
 
+    Signal(SIGPIPE, sigpipe_handler);
     /* alloc resources */
     flog = Fopen(PROXY_LOG, "a");
     Sem_init(&fmutex, 0, 1);
@@ -87,6 +90,10 @@ int main(int argc, char **argv)
     Fclose(flog);
 
     return 0;
+}
+
+static void sigpipe_handler(int sig){
+    printf("SIGPIPE received\n");
 }
 
 /*
@@ -239,7 +246,7 @@ int open_clientfd_ts(char *hostname, int port, sem_t *mutexp){
     return clientfd;
 }
 
-void unix_warn(char *msg) /* unix-style error */
+static void unix_warn(char *msg) /* unix-style error */
 {
     fprintf(stderr, "%s: %s\n", msg, strerror(errno));
 }
